@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ReqLab — API Client</title>
+    <meta name="description" content="ReqLab: a lightweight API client for building, sending, and inspecting HTTP requests." />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%A7%AA%3C/text%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="css/styles.css" />
+  </head>
+  <body>
+    <!-- ── Header ──────────────────────────────────────────────────────── -->
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">🧪</span>
+        <span class="brand-name">ReqLab</span>
+        <span class="brand-tag">API Client</span>
+      </div>
+
+      <div class="topbar-right">
+        <div class="env-picker">
+          <span class="env-icon">🌐</span>
+          <select id="envSelect" title="Active environment"></select>
+          <button class="btn ghost tiny" id="manageEnvBtn" title="Manage environments">Manage</button>
+        </div>
+        <div class="topbar-actions">
+          <button class="btn ghost tiny" id="importBtn">Import</button>
+          <button class="btn ghost tiny" id="exportBtn">Export</button>
+          <input type="file" id="importFile" accept="application/json,.json" hidden />
+        </div>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <!-- ── Sidebar ───────────────────────────────────────────────────── -->
+      <aside class="sidebar">
+        <div class="side-tabs">
+          <button class="side-tab active" data-side="collections">Collections</button>
+          <button class="side-tab" data-side="history">History</button>
+        </div>
+
+        <div class="side-panel active" id="collectionsPanel">
+          <div class="side-head">
+            <span class="side-title">Collections</span>
+            <button class="btn ghost tiny" id="newCollectionBtn" title="New collection">＋</button>
+          </div>
+          <div id="collectionsTree" class="tree"></div>
+        </div>
+
+        <div class="side-panel" id="historyPanel">
+          <div class="side-head">
+            <span class="side-title">History</span>
+            <button class="btn ghost tiny" id="clearHistoryBtn" title="Clear history">Clear</button>
+          </div>
+          <div id="historyList" class="tree"></div>
+        </div>
+      </aside>
+
+      <!-- ── Main ──────────────────────────────────────────────────────── -->
+      <main class="main">
+        <!-- Open request tabs -->
+        <div class="tabbar" id="tabBar"></div>
+
+        <!-- Request builder -->
+        <section class="request" id="requestPane">
+          <div class="urlbar">
+            <select id="methodSelect" class="method-select">
+              <option>GET</option>
+              <option>POST</option>
+              <option>PUT</option>
+              <option>PATCH</option>
+              <option>DELETE</option>
+              <option>HEAD</option>
+              <option>OPTIONS</option>
+            </select>
+            <input
+              type="text"
+              id="urlInput"
+              class="url-input"
+              placeholder="Enter request URL — e.g. https://api.example.com/users  (use {{baseUrl}} for variables)"
+              spellcheck="false"
+              autocomplete="off"
+            />
+            <button class="btn ghost icon" id="codeBtn" title="Generate code">&lt;/&gt;</button>
+            <button class="btn primary send" id="sendBtn">Send</button>
+            <button class="btn outline" id="saveBtn" title="Save request">Save</button>
+          </div>
+
+          <div class="req-tabs">
+            <button class="req-tab active" data-req="params">Params <span class="count" id="paramsCount"></span></button>
+            <button class="req-tab" data-req="auth">Authorization</button>
+            <button class="req-tab" data-req="headers">Headers <span class="count" id="headersCount"></span></button>
+            <button class="req-tab" data-req="body">Body <span class="dot-mark" id="bodyDot"></span></button>
+          </div>
+
+          <div class="req-content">
+            <!-- Params -->
+            <div class="req-panel active" id="paramsPanel">
+              <div class="kv-head"><span></span><span>Key</span><span>Value</span><span></span></div>
+              <div id="paramsEditor" class="kv-editor"></div>
+            </div>
+
+            <!-- Authorization -->
+            <div class="req-panel" id="authPanel">
+              <div class="auth-row">
+                <label>Type</label>
+                <select id="authType">
+                  <option value="none">No Auth</option>
+                  <option value="bearer">Bearer Token</option>
+                  <option value="basic">Basic Auth</option>
+                  <option value="apikey">API Key</option>
+                </select>
+              </div>
+              <div id="authFields" class="auth-fields"></div>
+            </div>
+
+            <!-- Headers -->
+            <div class="req-panel" id="headersPanel">
+              <div class="kv-head"><span></span><span>Key</span><span>Value</span><span></span></div>
+              <div id="headersEditor" class="kv-editor"></div>
+            </div>
+
+            <!-- Body -->
+            <div class="req-panel" id="bodyPanel">
+              <div class="body-modes">
+                <label><input type="radio" name="bodyMode" value="none" /> none</label>
+                <label><input type="radio" name="bodyMode" value="raw" /> raw</label>
+                <label><input type="radio" name="bodyMode" value="urlencoded" /> x-www-form-urlencoded</label>
+                <label><input type="radio" name="bodyMode" value="form-data" /> form-data</label>
+                <select id="bodyRawType" class="raw-type" title="Raw content type">
+                  <option value="json">JSON</option>
+                  <option value="text">Text</option>
+                  <option value="xml">XML</option>
+                  <option value="html">HTML</option>
+                  <option value="javascript">JavaScript</option>
+                </select>
+                <button class="btn ghost tiny" id="beautifyBtn" title="Beautify JSON">Beautify</button>
+              </div>
+
+              <div id="bodyRawWrap" class="body-wrap">
+                <textarea id="bodyRaw" class="code-area" spellcheck="false" placeholder="Request body"></textarea>
+              </div>
+              <div id="bodyUrlWrap" class="body-wrap hidden">
+                <div class="kv-head"><span></span><span>Key</span><span>Value</span><span></span></div>
+                <div id="urlencodedEditor" class="kv-editor"></div>
+              </div>
+              <div id="bodyFormWrap" class="body-wrap hidden">
+                <div class="kv-head"><span></span><span>Key</span><span>Value</span><span></span></div>
+                <div id="formDataEditor" class="kv-editor"></div>
+                <div class="hint small">Text fields only (file uploads are not supported in this build).</div>
+              </div>
+              <div id="bodyNoneWrap" class="body-wrap hidden">
+                <div class="empty small">This request has no body.</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Drag handle -->
+        <div class="divider" id="divider" title="Drag to resize"></div>
+
+        <!-- Response -->
+        <section class="response" id="responsePane">
+          <div class="resp-bar">
+            <div class="resp-tabs">
+              <button class="resp-tab active" data-resp="pretty">Pretty</button>
+              <button class="resp-tab" data-resp="raw">Raw</button>
+              <button class="resp-tab" data-resp="preview">Preview</button>
+              <button class="resp-tab" data-resp="headers">Headers <span class="count" id="respHeadersCount"></span></button>
+            </div>
+            <div class="resp-meta" id="respMeta">
+              <span class="meta-status" id="respStatus"></span>
+              <span class="meta-item" id="respTime"></span>
+              <span class="meta-item" id="respSize"></span>
+              <button class="btn ghost tiny" id="copyRespBtn" title="Copy response body" hidden>Copy</button>
+            </div>
+          </div>
+
+          <div class="resp-content">
+            <div class="resp-placeholder" id="respPlaceholder">
+              <div class="ph-icon">🛰️</div>
+              <p>Send a request to see the response here.</p>
+              <p class="small muted">Tip: press <kbd>⌘/Ctrl</kbd> + <kbd>Enter</kbd> to send.</p>
+            </div>
+            <pre class="resp-panel" id="respPretty"></pre>
+            <pre class="resp-panel" id="respRaw"></pre>
+            <div class="resp-panel" id="respPreview"></div>
+            <div class="resp-panel" id="respHeaders"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <!-- ── Save modal ──────────────────────────────────────────────────── -->
+    <div class="modal-backdrop hidden" id="saveModal">
+      <div class="modal">
+        <h3>Save request</h3>
+        <div class="field">
+          <label>Request name</label>
+          <input type="text" id="saveName" placeholder="e.g. Get user by id" />
+        </div>
+        <div class="field">
+          <label>Collection</label>
+          <select id="saveCollection"></select>
+        </div>
+        <div class="field hidden" id="newCollectionField">
+          <label>New collection name</label>
+          <input type="text" id="newCollectionName" placeholder="e.g. My API" />
+        </div>
+        <div class="row end">
+          <button class="btn ghost" id="saveCancel">Cancel</button>
+          <button class="btn primary" id="saveConfirm">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Environment modal ───────────────────────────────────────────── -->
+    <div class="modal-backdrop hidden" id="envModal">
+      <div class="modal wide">
+        <div class="modal-head">
+          <h3>Environments &amp; variables</h3>
+          <button class="btn ghost icon" id="envCloseBtn">✕</button>
+        </div>
+        <div class="env-manager">
+          <div class="env-list-col">
+            <div class="side-head">
+              <span class="side-title">Environments</span>
+              <button class="btn ghost tiny" id="newEnvBtn">＋</button>
+            </div>
+            <div id="envList" class="env-list"></div>
+          </div>
+          <div class="env-edit-col">
+            <div id="envEditEmpty" class="empty">Select or create an environment.</div>
+            <div id="envEditBody" class="hidden">
+              <div class="field">
+                <label>Name</label>
+                <div class="row tight">
+                  <input type="text" id="envNameInput" placeholder="Environment name" />
+                  <button class="btn danger-outline tiny" id="deleteEnvBtn">Delete</button>
+                </div>
+              </div>
+              <label class="field-label">Variables</label>
+              <div class="kv-head"><span></span><span>Key</span><span>Value</span><span></span></div>
+              <div id="envVarsEditor" class="kv-editor"></div>
+            </div>
+          </div>
+        </div>
+        <div class="row end">
+          <button class="btn primary" id="envSaveBtn">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Code modal ──────────────────────────────────────────────────── -->
+    <div class="modal-backdrop hidden" id="codeModal">
+      <div class="modal wide">
+        <div class="modal-head">
+          <h3>Generate code</h3>
+          <button class="btn ghost icon" id="codeCloseBtn">✕</button>
+        </div>
+        <div class="row tight">
+          <select id="codeLang">
+            <option value="curl">cURL</option>
+            <option value="fetch">JavaScript — fetch</option>
+          </select>
+          <button class="btn ghost tiny" id="copyCodeBtn">Copy</button>
+        </div>
+        <pre class="code-output" id="codeOutput"></pre>
+      </div>
+    </div>
+
+    <div id="toasts" class="toasts"></div>
+
+    <script src="js/variables.js"></script>
+    <script src="js/codegen.js"></script>
+    <script src="js/highlight.js"></script>
+    <script src="js/api.js"></script>
+    <script src="js/app.js"></script>
+  </body>
+</html>

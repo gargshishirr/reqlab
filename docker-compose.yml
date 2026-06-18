@@ -1,0 +1,19 @@
+services:
+  reqlab:
+    build: .
+    container_name: reqlab
+    ports:
+      - "4000:4000"
+    environment:
+      PORT: 4000
+      HOST: 0.0.0.0
+      # Set to "true" if you expose ReqLab beyond your machine and want to
+      # stop the proxy from reaching localhost / private network addresses.
+      BLOCK_PRIVATE_HOSTS: "false"
+      DATA_DIR: /app/data
+    volumes:
+      - reqlab-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  reqlab-data:

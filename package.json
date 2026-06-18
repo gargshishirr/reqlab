@@ -1,0 +1,29 @@
+{
+  "name": "reqlab",
+  "version": "1.0.0",
+  "description": "ReqLab — a lightweight, hostable API client (a Postman-style tool). Build, send, and inspect HTTP requests with collections, environments, variables, history, and code generation. Includes a server-side proxy to bypass browser CORS.",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "api-client",
+    "http-client",
+    "postman",
+    "rest",
+    "rest-client",
+    "proxy",
+    "developer-tools"
+  ],
+  "author": "ReqLab",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
