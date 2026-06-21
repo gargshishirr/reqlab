@@ -11,11 +11,7 @@ COPY . .
 
 ENV NODE_ENV=production \
     PORT=4000 \
-    HOST=0.0.0.0 \
-    DATA_DIR=/app/data
-
-# Persisted collections / environments / history.
-VOLUME ["/app/data"]
+    HOST=0.0.0.0
 
 EXPOSE 4000
 

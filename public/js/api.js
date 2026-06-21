@@ -1,22 +1,13 @@
 /*
- * Thin client for the ReqLab backend (proxy + persisted store).
+ * Thin client for the ReqLab backend.
+ *
+ * The backend is a STATELESS proxy: it forwards a request and returns the
+ * response. It stores nothing. All of your data (collections, environments,
+ * history, tabs) is kept in this browser's localStorage by app.js — it is
+ * never sent to the server to be persisted.
  */
 (function (global) {
   'use strict';
-
-  async function json(method, path, body) {
-    const opts = { method, headers: { 'Content-Type': 'application/json' } };
-    if (body !== undefined) opts.body = JSON.stringify(body);
-    const res = await fetch(path, opts);
-    let data = null;
-    try {
-      data = await res.json();
-    } catch (_e) {
-      /* ignore */
-    }
-    if (!res.ok) throw new Error((data && data.error) || res.statusText || 'request failed');
-    return data;
-  }
 
   global.RL_api = {
     /**
@@ -32,14 +23,6 @@
       });
       const data = await res.json();
       return data; // may be { ...response } or { error, time }
-    },
-
-    getStore() {
-      return json('GET', '/api/store');
-    },
-
-    saveStore(partial) {
-      return json('PUT', '/api/store', partial);
     },
   };
 })(window);

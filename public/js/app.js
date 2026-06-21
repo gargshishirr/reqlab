@@ -23,6 +23,7 @@
     javascript: 'application/javascript',
   };
   const TABS_KEY = 'reqlab_tabs_v1';
+  const STORE_KEY = 'reqlab_store_v1';
 
   // ── State ───────────────────────────────────────────────────────────────
   const state = {
@@ -82,17 +83,26 @@
   }
 
   // ── Persistence ─────────────────────────────────────────────────────────
+  // ReqLab keeps ALL of your data (collections, environments, history, tabs)
+  // in THIS browser only — it is never sent to the server to be stored on disk.
+  // That means tokens/secrets you use never land on the hosted server (e.g.
+  // Render); they stay on your own machine, like a local desktop app.
   let saveTimer = null;
   function persistStore() {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
-      window.RL_api
-        .saveStore({
-          collections: state.collections,
-          environments: state.environments,
-          history: state.history,
-        })
-        .catch(() => {});
+      try {
+        localStorage.setItem(
+          STORE_KEY,
+          JSON.stringify({
+            collections: state.collections,
+            environments: state.environments,
+            history: state.history,
+          })
+        );
+      } catch (_e) {
+        /* ignore quota errors */
+      }
     }, 250);
   }
 
@@ -519,7 +529,7 @@
       });
       tab.response = resp;
       renderResponse(resp);
-      addHistory(req, resp, eff.url);
+      addHistory(req, resp);
       persistTabs();
     } catch (err) {
       const resp = { error: 'Could not reach the ReqLab server: ' + err.message };
@@ -654,12 +664,15 @@
   }
 
   // ── History ─────────────────────────────────────────────────────────────
-  function addHistory(req, resp, resolvedUrl) {
+  function addHistory(req, resp) {
     state.history.unshift({
       id: uid(),
       ts: Date.now(),
       method: req.method,
-      url: resolvedUrl || req.url,
+      // Store the UNRESOLVED url (keeps {{variables}} as-is) so secrets that
+      // a variable resolves to — e.g. an API key in the query string — are
+      // never written to history.
+      url: req.url,
       status: resp.status || null,
       ok: !!resp.ok,
       request: JSON.parse(JSON.stringify(req)),
@@ -1229,14 +1242,14 @@
   async function init() {
     bindEvents();
 
-    // Hydrate persisted store (collections / environments / history).
+    // Hydrate from THIS browser's localStorage (never from the server).
     try {
-      const store = await window.RL_api.getStore();
+      const store = JSON.parse(localStorage.getItem(STORE_KEY)) || {};
       state.collections = store.collections || [];
       state.environments = store.environments || [];
       state.history = store.history || [];
     } catch (_e) {
-      /* offline-friendly: start empty */
+      /* start empty */
     }
 
     // Restore open tabs (or create a sample request the first time).

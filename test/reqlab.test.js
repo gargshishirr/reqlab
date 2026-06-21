@@ -3,14 +3,10 @@
 const { test, after } = require('node:test');
 const assert = require('node:assert');
 const http = require('http');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
 const express = require('express');
 
 const { createProxyHandler, isPrivateHost, sanitizeHeaders } = require('../src/api/proxy');
 const { createRouter } = require('../src/api/routes');
-const { Store } = require('../src/store');
 
 // ── Pure helpers ────────────────────────────────────────────────────────────
 test('isPrivateHost: classifies loopback / private / public', () => {
@@ -40,39 +36,12 @@ test('sanitizeHeaders: strips hop-by-hop and keeps user headers', () => {
   assert.equal(out['X-Custom'], 'yes');
 });
 
-// ── Store ───────────────────────────────────────────────────────────────────
-test('store: persists and merges partial updates', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reqlab-'));
-  const store = new Store(dir);
-
-  assert.deepEqual(store.getAll().collections, []);
-  store.update({ collections: [{ id: 'a', name: 'A', requests: [] }] });
-  store.update({ environments: [{ id: 'e', name: 'Env', variables: [] }] });
-
-  // Reload from disk to confirm persistence.
-  const reloaded = new Store(dir);
-  assert.equal(reloaded.getAll().collections.length, 1);
-  assert.equal(reloaded.getAll().collections[0].name, 'A');
-  assert.equal(reloaded.getAll().environments.length, 1);
-
-  fs.rmSync(dir, { recursive: true, force: true });
-});
-
-test('store: caps history length', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reqlab-'));
-  const store = new Store(dir);
-  const big = Array.from({ length: 500 }, (_, i) => ({ id: i }));
-  store.update({ history: big });
-  assert.ok(store.getAll().history.length <= 200);
-  fs.rmSync(dir, { recursive: true, force: true });
-});
-
-// ── Integration: proxy + store router against a local target ────────────────
+// ── Integration: stateless proxy against a local target ─────────────────────
 function listen(server) {
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
 }
 
-test('proxy + store API: forwards requests and round-trips data', async (t) => {
+test('proxy API: forwards requests (server stores nothing)', async (t) => {
   // A target server that echoes back what it received.
   const target = http.createServer((req, res) => {
     let body = '';
@@ -85,20 +54,22 @@ test('proxy + store API: forwards requests and round-trips data', async (t) => {
   });
   const targetPort = await listen(target);
 
-  // The ReqLab app (proxy + store) under test.
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reqlab-'));
-  const store = new Store(dir);
-  const config = { proxyTimeoutMs: 5000, proxyMaxTimeout: 10000, maxResponseBytes: 1048576, blockPrivateHosts: false };
+  // The ReqLab app (stateless proxy) under test.
+  const config = {
+    proxyTimeoutMs: 5000,
+    proxyMaxTimeout: 10000,
+    maxResponseBytes: 1048576,
+    blockPrivateHosts: false,
+  };
   const app = express();
   app.use(express.json());
-  app.use('/api', createRouter({ store, proxyHandler: createProxyHandler(config) }));
+  app.use('/api', createRouter({ proxyHandler: createProxyHandler(config) }));
   const appServer = http.createServer(app);
   const appPort = await listen(appServer);
 
   after(() => {
     target.close();
     appServer.close();
-    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   const base = `http://127.0.0.1:${appPort}`;
@@ -135,23 +106,16 @@ test('proxy + store API: forwards requests and round-trips data', async (t) => {
     assert.equal(res.status, 400);
   });
 
-  await t.test('store round-trips via the API', async () => {
-    const put = await fetch(`${base}/api/store`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ collections: [{ id: 'c1', name: 'Mine', requests: [] }] }),
-    });
-    assert.equal(put.status, 200);
-    const get = await (await fetch(`${base}/api/store`)).json();
-    assert.equal(get.collections.length, 1);
-    assert.equal(get.collections[0].name, 'Mine');
+  await t.test('exposes no persistence endpoint (server is stateless)', async () => {
+    const res = await fetch(`${base}/api/store`);
+    assert.equal(res.status, 404);
   });
 
   await t.test('blocks private hosts when configured', async () => {
     const strictConfig = { ...config, blockPrivateHosts: true };
     const strictApp = express();
     strictApp.use(express.json());
-    strictApp.use('/api', createRouter({ store, proxyHandler: createProxyHandler(strictConfig) }));
+    strictApp.use('/api', createRouter({ proxyHandler: createProxyHandler(strictConfig) }));
     const strictServer = http.createServer(strictApp);
     const strictPort = await listen(strictServer);
     after(() => strictServer.close());

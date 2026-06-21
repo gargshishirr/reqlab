@@ -5,11 +5,9 @@ const http = require('http');
 const express = require('express');
 
 const config = require('./config');
-const { Store } = require('./store');
 const { createProxyHandler } = require('./api/proxy');
 const { createRouter } = require('./api/routes');
 
-const store = new Store(config.dataDir);
 const proxyHandler = createProxyHandler(config);
 
 const app = express();
@@ -20,7 +18,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.text({ limit: '50mb', type: 'text/plain' }));
 
 // API
-app.use('/api', createRouter({ store, proxyHandler }));
+app.use('/api', createRouter({ proxyHandler }));
 app.use('/api', (_req, res) => res.status(404).json({ error: 'endpoint not found' }));
 
 // Static website
@@ -37,7 +35,7 @@ server.listen(config.port, config.host, () => {
   console.log('  └───────────────────────────────────────────────┘');
   console.log(`  Web UI / API : http://localhost:${config.port}`);
   console.log(`  Proxy        : POST /api/proxy`);
-  console.log(`  Data dir     : ${config.dataDir}`);
+  console.log(`  Storage      : stateless (nothing written to disk)`);
   console.log(
     `  SSRF guard   : ${config.blockPrivateHosts ? 'ON (private hosts blocked)' : 'off'}`
   );

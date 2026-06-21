@@ -115,15 +115,16 @@ Everything below is implemented and working.
   fetch**.
 - **Import / Export** — ReqLab's own JSON format, plus best-effort **Postman v2**
   collection import.
-- **Persistence** — collections/environments/history are saved on the server;
-  open tabs are restored from the browser's `localStorage`.
+- **Browser-only storage** — collections/environments/history and open tabs are
+  all saved in **your browser's `localStorage`**. Nothing is sent to the server
+  to be stored, so tokens/secrets never touch the host.
 - **Keyboard shortcut** — `⌘/Ctrl + Enter` sends the active request.
 
 ### Backend
 
 - A **proxy** endpoint that forwards requests and reports status, headers, body,
   timing, and byte size.
-- A **store** endpoint for persistence.
+- **Stateless** — the server writes nothing to disk; there is no storage endpoint.
 - Configurable **timeout**, **max response size**, and an optional **SSRF guard**
   that blocks requests to localhost/private addresses.
 - **Docker** + compose for one-command hosting.
@@ -143,33 +144,32 @@ flowchart TB
         API[api.js — backend client]
     end
 
-    subgraph Server["🖥️ Node.js (src/)"]
+    subgraph Server["🖥️ Node.js (src/) — stateless"]
         direction TB
         SRV[server.js — Express app]
         RT[api/routes.js]
         PX[api/proxy.js — the CORS bypass]
-        ST[store.js — JSON persistence]
         CFG[config.js — env config]
     end
 
     TARGET[(Any HTTP API)]
-    DISK[(data/store.json)]
+    LS[(browser localStorage<br/>collections · env · history · tabs)]
 
     APP --> VARS & CODE & HL & API
+    APP <--> LS
     API -->|/api/proxy| RT --> PX --> TARGET
-    API -->|/api/store| RT --> ST --> DISK
     SRV --> RT
     SRV --> CFG
 ```
 
 **Separation of concerns:**
 
-- The **browser** owns everything about _building_ a request and _displaying_ a
-  response. It resolves variables, applies auth, assembles the body, and renders
-  the result.
-- The **server** is deliberately "dumb": it forwards whatever fully-formed
-  request it's handed and persists JSON. This keeps the security surface small
-  and the logic easy to follow.
+- The **browser** owns everything about _building_ a request, _displaying_ a
+  response, and _storing_ your data. It resolves variables, applies auth,
+  assembles the body, renders the result, and persists to `localStorage`.
+- The **server** is deliberately "dumb" and **stateless**: it forwards whatever
+  fully-formed request it's handed and stores nothing. This keeps the security
+  surface small and the logic easy to follow.
 
 ---
 
@@ -210,7 +210,7 @@ When you click **Send**, here's exactly what happens:
    - **Raw**, **Headers** (table), and **Preview** (sandboxed iframe for HTML, or
      an `<img>` for images).
 
-6. **Record history** and persist tabs.
+6. **Record history** and persist tabs — both to the browser's `localStorage`.
 
 ```mermaid
 sequenceDiagram
@@ -238,12 +238,11 @@ sequenceDiagram
 ```
 reqlab/
 ├── src/
-│   ├── server.js          # Express app: serves the site + API, graceful shutdown
+│   ├── server.js          # Express app: serves the site + stateless API, graceful shutdown
 │   ├── config.js          # env-driven config (+ tiny .env loader)
-│   ├── store.js           # JSON-file persistence for collections/env/history
 │   └── api/
 │       ├── proxy.js       # the request-forwarding proxy (CORS bypass + SSRF guard)
-│       └── routes.js      # wires /proxy, /store, /health
+│       └── routes.js      # wires /health and /proxy
 ├── public/                # the website (no build step)
 │   ├── index.html         # full UI markup
 │   ├── css/styles.css     # dark teal/sky theme
@@ -251,12 +250,12 @@ reqlab/
 │       ├── variables.js   # {{var}} substitution helper
 │       ├── codegen.js     # cURL / fetch snippet generation
 │       ├── highlight.js   # HTML-escaping + JSON syntax highlighting
-│       ├── api.js         # thin client for the backend
-│       └── app.js         # main UI logic (the bulk of the frontend)
+│       ├── api.js         # thin client for the backend proxy
+│       └── app.js         # main UI logic + localStorage persistence
 ├── test/
 │   └── reqlab.test.js     # backend test suite (node:test)
 ├── Dockerfile             # container image
-├── docker-compose.yml     # one-command hosting + data volume
+├── docker-compose.yml     # one-command hosting
 ├── .dockerignore
 ├── .env.example           # documented configuration template
 ├── .gitignore
@@ -272,22 +271,25 @@ reqlab/
 
 Centralizes all configuration. It includes a **minimal `.env` loader** (so there
 is no `dotenv` dependency) and exposes typed values with sensible defaults:
-`port`, `host`, `proxyTimeoutMs`, `proxyMaxTimeout`, `maxResponseBytes`,
-`blockPrivateHosts`, and `dataDir`. Everything has a zero-config default, so the
-app runs immediately with no `.env` at all.
+`port`, `host`, `proxyTimeoutMs`, `proxyMaxTimeout`, `maxResponseBytes`, and
+`blockPrivateHosts`. Everything has a zero-config default, so the app runs
+immediately with no `.env` at all.
 
-### `src/store.js`
+### Storage — there is none on the server
 
-A tiny JSON persistence layer. The `Store` class:
+ReqLab's server is **stateless**: it never writes to disk. All of your data
+(collections, environments, history, and open tabs) is stored in the browser's
+`localStorage` by `app.js`, under two keys (`reqlab_store_v1` and
+`reqlab_tabs_v1`). The practical consequences:
 
-- Loads `data/store.json` on construction (falling back to empty defaults if the
-  file is missing or corrupt).
-- `getAll()` returns `{ collections, environments, history }`.
-- `update(partial)` merges only the provided keys, **caps history at 200
-  entries**, and writes atomically (`write to .tmp` then `rename`) so a crash
-  mid-write can't corrupt the store.
-
-Persistence failures are caught and logged — they never crash the API.
+- **Your tokens/secrets never reach the host.** When you host ReqLab (e.g. on
+  Render), nothing of yours is written there — your data lives on the machine
+  whose browser you use.
+- History stores the **unresolved** URL (keeping `{{variables}}` as-is), so a
+  secret that a variable resolves to — like an API key in a query string — is
+  never recorded.
+- The trade-off is no cross-device sync: your data is tied to one browser
+  (exactly like a local desktop app).
 
 ### `src/api/proxy.js`
 
@@ -314,25 +316,26 @@ can be unit-tested directly.
 
 ### `src/api/routes.js`
 
-Builds the Express router and wires three endpoints:
+Builds the Express router and wires just two endpoints:
 
 - `GET  /api/health` — liveness probe.
 - `POST /api/proxy` — the forwarding handler above.
-- `GET  /api/store` / `PUT /api/store` — read and merge persisted data.
 
-A small `handle()` wrapper ensures any thrown error becomes a clean
-`400 { error }` JSON response instead of an unhandled crash.
+There is **no storage endpoint** — the server is stateless. A small `handle()`
+wrapper ensures any thrown error becomes a clean `400 { error }` JSON response
+instead of an unhandled crash.
 
 ### `src/server.js`
 
 The entry point. It:
 
-- Creates the `Store` and proxy handler from `config`.
+- Creates the proxy handler from `config`.
 - Configures Express with large body limits (50 MB) so big payloads work.
 - Mounts the API under `/api`, with a JSON 404 for unknown API routes.
 - Serves the static site from `public/` with an SPA fallback to `index.html`.
-- Starts an HTTP server, prints a friendly banner (URL, data dir, whether the
-  SSRF guard is on), and installs **graceful shutdown** on `SIGINT`/`SIGTERM`.
+- Starts an HTTP server, prints a friendly banner (URL, that storage is
+  stateless, whether the SSRF guard is on), and installs **graceful shutdown**
+  on `SIGINT`/`SIGTERM`.
 
 ---
 
@@ -369,9 +372,9 @@ Because escaping happens before any markup is added, highlighting is XSS-safe.
 
 ### `public/js/api.js` → `window.RL_api`
 
-A thin wrapper over `fetch`: `proxy(payload)` calls `POST /api/proxy` (and
-returns the payload, which may carry a handled `error` rather than throwing),
-plus `getStore()` and `saveStore(partial)` for persistence.
+A thin wrapper over `fetch` with a single method: `proxy(payload)` calls
+`POST /api/proxy` (and returns the payload, which may carry a handled `error`
+rather than throwing). There are no storage calls — the server has no store.
 
 ### `public/js/app.js` → the main application
 
@@ -393,13 +396,14 @@ headers, auth, body }`.
 - **Collections, History, Environments, Save/Code modals, Import/Export** —
   including a `convertPostman()` that maps a Postman v2 collection into ReqLab's
   model.
-- **Persistence** — debounced server save for the store; `localStorage` for tabs.
+- **Persistence** — everything (collections, environments, history, tabs) is
+  saved to the browser's `localStorage`; nothing is sent to the server.
 
 ---
 
 ## 9. Data model
 
-The persisted store is a single JSON object:
+The browser's `localStorage` store (key `reqlab_store_v1`) is a single JSON object:
 
 ```jsonc
 {
@@ -483,6 +487,10 @@ The **request model** (used in tabs, collections, and history) looks like:
 ReqLab is an API client, so it intentionally sends requests anywhere — but the
 implementation is careful about the things that matter:
 
+- **The server stores nothing.** It's stateless — collections, environments, and
+  history live only in your browser's `localStorage`. Your tokens and secrets are
+  never written to the host's disk, so a hosted instance (e.g. on Render) holds
+  none of your data.
 - **Response rendering is XSS-safe.** Every value shown in the UI is
   HTML-escaped before display. The **Preview** tab renders HTML inside an
   `<iframe sandbox>` with **no allowances**, so response scripts cannot execute
@@ -493,12 +501,14 @@ implementation is careful about the things that matter:
   loopback and private-range targets (`127/8`, `10/8`, `172.16–31`, `192.168`,
   link-local, IPv6 ULA/loopback). It's **off by default** so local development
   against your own `localhost` APIs works; turn it **on** for any public
-  deployment.
+  deployment. Note it matches on the hostname text, so a determined attacker
+  could bypass it via a domain that resolves to a private IP or a redirect.
 - **Bounded resource use.** Per-request timeouts (capped server-side) and a
   max-response-size limit protect the server from hung or huge responses.
 - **The honest caveat.** A publicly exposed proxy can be abused to reach internal
-  services. For anything beyond local/personal use, enable the SSRF guard and put
-  ReqLab behind authentication. This is called out in the README too.
+  services, and there is **no authentication**. For anything beyond
+  local/personal use, enable the SSRF guard and put ReqLab behind authentication.
+  This is called out in the README too.
 
 ---
 
@@ -506,17 +516,15 @@ implementation is careful about the things that matter:
 
 ### Automated tests (`npm test`, `node:test`)
 
-Nine tests, all passing:
+All passing:
 
 - `isPrivateHost` correctly classifies loopback / private / public addresses
   (including the `172.16–31` boundary).
 - `sanitizeHeaders` strips hop-by-hop headers and keeps user headers.
-- `Store` persists and merges partial updates, reloads from disk, and **caps
-  history** at 200.
 - An **end-to-end integration test** spins up a local echo server and the ReqLab
   app, then verifies: a POST is forwarded with its body + `Authorization`; an
-  invalid URL returns `400`; the store round-trips via the API; and private hosts
-  are blocked when the guard is on.
+  invalid URL returns `400`; there is **no `/api/store` endpoint** (the server is
+  stateless); and private hosts are blocked when the guard is on.
 
 ### Live browser verification
 
@@ -528,8 +536,7 @@ The running app was driven in a real browser to confirm:
 - **Params → URL sync** works (typing a param updated the URL and the count
   badge).
 - **Variable resolution** and **cURL generation** produce correct output.
-- A **clean cold boot** serves `/api/health`, an empty store, and the static
-  `index.html`.
+- A **clean cold boot** serves `/api/health` and the static `index.html`.
 
 ---
 
@@ -539,19 +546,22 @@ The running app was driven in a real browser to confirm:
 
 ```bash
 docker compose up --build
-# → http://localhost:4000   (data persisted in the reqlab-data volume)
+# → http://localhost:4000
 ```
 
 The `Dockerfile` installs only production deps, runs as a Node 20 Alpine image,
-exposes `4000`, declares a `/app/data` volume, and includes a `HEALTHCHECK`.
+exposes `4000`, and includes a `HEALTHCHECK`. No volume is needed because the
+server is stateless.
 
 ### Any Node host (Render, Railway, Fly.io, a VPS…)
 
 - **Build:** `npm install`
 - **Start:** `npm start`
-- The app reads `process.env.PORT`; mount a persistent disk at `DATA_DIR` to keep
-  collections across restarts.
-- Set `BLOCK_PRIVATE_HOSTS=true` and add auth for public deployments.
+- The app reads `process.env.PORT`. **No persistent disk is required** — the
+  server stores nothing. Your data lives in your browser, so a hosted instance
+  holds none of it.
+- Set `BLOCK_PRIVATE_HOSTS=true` and add an authentication layer for public
+  deployments.
 
 ---
 

@@ -51,6 +51,4 @@ module.exports = {
   proxyMaxTimeout: int('PROXY_MAX_TIMEOUT', 120000),
   maxResponseBytes: int('MAX_RESPONSE_BYTES', 26214400),
   blockPrivateHosts: bool('BLOCK_PRIVATE_HOSTS', false),
-
-  dataDir: process.env.DATA_DIR || './data',
 };

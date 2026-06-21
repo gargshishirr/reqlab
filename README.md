@@ -41,12 +41,12 @@ No build step, no framework, no account — just `npm start`.
 - **Environments & variables** — define `{{variables}}` and switch environments; variables resolve in the URL, params, headers, body, and auth
 - **Code generation** — export the current request as **cURL** or **JavaScript fetch**
 - **Import / Export** — ReqLab JSON, plus best-effort **Postman v2** collection import
-- **Persistence** — collections/environments/history saved server-side; open tabs restored from `localStorage`
+- **Browser-only storage** — collections/environments/history/tabs are saved in **your own browser** (`localStorage`). They are **never sent to the server**, so tokens/secrets never touch the host (e.g. Render).
 - Keyboard shortcut: **⌘/Ctrl + Enter** to send
 
 ### Backend
 - **Proxy** (`POST /api/proxy`) forwards requests server-side to **bypass CORS** (the same reason the Postman/Insomnia desktop apps work), capturing status, headers, body, timing, and byte size
-- **Store API** for collections/environments/history (single JSON file)
+- **Stateless** — the server writes **nothing** to disk; it's a pure proxy
 - Configurable timeout, max response size, and an optional **SSRF guard** for private hosts
 - **Docker** + compose for one-command hosting
 
@@ -59,22 +59,23 @@ flowchart LR
     subgraph Browser["🌐 Web UI (public/)"]
         UI[Request builder · Tabs · Collections]
         VARS[Variable substitution + auth/body assembly]
+        LS[(localStorage<br/>collections · env · history)]
     end
-    subgraph Server["🖥️ Node.js (src/)"]
+    subgraph Server["🖥️ Node.js (src/) — stateless"]
         PROXY["/api/proxy — forwards the request"]
-        STORE["/api/store — collections/env/history"]
     end
     TARGET[(Any HTTP API)]
 
+    UI <--> LS
     UI --> VARS -->|"effective request"| PROXY --> TARGET
     TARGET -->|"status, headers, body, timing"| PROXY --> UI
-    UI <-->|persist| STORE
 ```
 
 The browser can't call arbitrary third-party APIs directly (CORS). So ReqLab
 assembles the final request — resolving `{{variables}}`, applying auth, building
 the body — and hands it to the local server, which performs the real request
-with Node's `fetch` and returns everything the UI needs to display.
+with Node's `fetch` and returns everything the UI needs to display. The server
+keeps **no state**; all your data lives in the browser.
 
 ---
 
@@ -83,12 +84,11 @@ with Node's `fetch` and returns everything the UI needs to display.
 ```
 reqlab/
 ├── src/
-│   ├── server.js          # Express app: static site + API
+│   ├── server.js          # Express app: static site + stateless API
 │   ├── config.js          # env-driven configuration
-│   ├── store.js           # JSON file persistence
 │   └── api/
 │       ├── proxy.js       # the request-forwarding proxy (CORS bypass + SSRF guard)
-│       └── routes.js      # proxy + store endpoints
+│       └── routes.js      # health + proxy endpoints
 ├── public/                # the website (no build step)
 │   ├── index.html
 │   ├── css/styles.css
@@ -149,8 +149,10 @@ Base URL: `http://localhost:4000/api`
 | --- | --- | --- |
 | `GET` | `/health` | Liveness probe |
 | `POST` | `/proxy` | Forward a request and return the response |
-| `GET` | `/store` | Get `{ collections, environments, history }` |
-| `PUT` | `/store` | Merge a partial update of the store |
+
+> That's the entire API. ReqLab's server is **stateless** — it has no storage
+> endpoints. Collections, environments, and history live in your browser's
+> `localStorage`, never on the server.
 
 ### `POST /api/proxy`
 
@@ -206,7 +208,8 @@ Copy `.env.example` to `.env` (all optional):
 | `PROXY_MAX_TIMEOUT` | `120000` | Upper bound on per-request timeout |
 | `MAX_RESPONSE_BYTES` | `26214400` | Max response kept for display (25 MB) |
 | `BLOCK_PRIVATE_HOSTS` | `false` | Block proxying to localhost/private IPs |
-| `DATA_DIR` | `./data` | Where the store is persisted |
+
+> There is no data directory to configure — the server stores nothing.
 
 ---
 
@@ -216,22 +219,29 @@ Copy `.env.example` to `.env` (all optional):
 
 ```bash
 docker compose up --build
-# → http://localhost:4000   (data persisted in a named volume)
+# → http://localhost:4000
 ```
 
 Or:
 
 ```bash
 docker build -t reqlab .
-docker run -p 4000:4000 -v reqlab-data:/app/data reqlab
+docker run -p 4000:4000 reqlab
 ```
+
+No volume is needed — the server is stateless.
 
 ### Any Node host (Render, Railway, Fly.io, a VPS…)
 
 - **Build:** `npm install`
 - **Start:** `npm start`
-- The app reads `process.env.PORT`. Mount a persistent disk at `DATA_DIR` to keep
-  collections across restarts.
+- The app reads `process.env.PORT`. **No persistent disk is required** — the
+  server keeps no state. Your collections/environments/history live in your
+  browser, so nothing of yours is written to the host.
+
+> **Where does my data go when I host on Render?** Nowhere on Render. The server
+> never writes to disk; your data stays in your browser's `localStorage` on the
+> machine you use ReqLab from.
 
 > **If you expose ReqLab publicly,** set `BLOCK_PRIVATE_HOSTS=true`. The proxy
 > forwards whatever URL it's given (that's the whole point of an API client), so
@@ -248,14 +258,16 @@ docker run -p 4000:4000 -v reqlab-data:/app/data reqlab
 npm test
 ```
 
-The suite covers the SSRF host classifier, header sanitization, the persistent
-store (including history capping), and an end-to-end proxy + store integration
-test against a local target server.
+The suite covers the SSRF host classifier, header sanitization, and an
+end-to-end proxy integration test (including the stateless behaviour — no
+`/api/store` endpoint) against a local target server.
 
 ---
 
 ## 🔐 Security notes
 
+- **The server stores nothing.** Collections, environments, and history live
+  only in your browser's `localStorage` — tokens/secrets never reach the host.
 - Response bodies are **HTML-escaped** before display; the **Preview** tab renders
   HTML inside a fully locked `sandbox` iframe (no script execution) — so a hostile
   response can't run code in the app.

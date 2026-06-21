@@ -3,14 +3,14 @@
 const express = require('express');
 
 /**
- * REST router for ReqLab's persisted data (collections, environments, history)
- * plus the request proxy.
+ * REST router for ReqLab. The server is intentionally STATELESS — it forwards
+ * requests through the proxy and stores nothing on disk. All user data
+ * (collections, environments, history) lives in the browser's localStorage.
  *
  * @param {object} deps
- * @param {import('../store').Store} deps.store
  * @param {Function} deps.proxyHandler
  */
-function createRouter({ store, proxyHandler }) {
+function createRouter({ proxyHandler }) {
   const router = express.Router();
 
   const handle = (fn) => (req, res) => {
@@ -27,23 +27,11 @@ function createRouter({ store, proxyHandler }) {
     handle((_req, res) => res.json({ status: 'ok', time: Date.now() }))
   );
 
-  // The request-forwarding proxy.
+  // The request-forwarding proxy — the only real endpoint.
   router.post('/proxy', proxyHandler);
-
-  // ── Persisted store ──────────────────────────────────────────────────
-  // Return everything the UI needs to hydrate.
-  router.get(
-    '/store',
-    handle((_req, res) => res.json(store.getAll()))
-  );
-
-  // Merge a partial update ({ collections?, environments?, history? }).
-  router.put(
-    '/store',
-    handle((req, res) => res.json(store.update(req.body)))
-  );
 
   return router;
 }
 
 module.exports = { createRouter };
+
