@@ -1,0 +1,32 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# Runs ReqLab as a public demo on Render's free plan. The proxy only calls a few well-known test APIs
+# (ALLOWED_HOSTS), checks every redirect hop, and is rate limited, so the demo can't be used as an open
+# proxy. Your own copy (npm start) has none of these limits.
+services:
+  - type: web
+    name: reqlab
+    runtime: node
+    plan: free
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: BLOCK_PRIVATE_HOSTS
+        value: "true"
+      - key: ALLOWED_HOSTS
+        value: jsonplaceholder.typicode.com,dummyjson.com,httpbingo.org,postman-echo.com,reqres.in,pokeapi.co,dog.ceo,*.dog.ceo,catfact.ninja,example.com
+      - key: MAX_RESPONSE_BYTES
+        value: "2097152"
+      - key: MAX_BODY_BYTES
+        value: "1048576"
+      - key: RATE_LIMIT_PER_MINUTE
+        value: "20"
+      - key: RATE_LIMIT_TOTAL_PER_MINUTE
+        value: "120"
+      # Render sits behind Cloudflare, which sets this header to the visitor's address.
+      - key: CLIENT_IP_HEADER
+        value: cf-connecting-ip

@@ -9,6 +9,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { parseAllowedHosts } = require('./api/guard');
 
 // ── Minimal .env loader (no extra dependency) ─────────────────────────────
 function loadDotEnv() {
@@ -50,5 +51,17 @@ module.exports = {
   proxyTimeoutMs: int('PROXY_TIMEOUT_MS', 30000),
   proxyMaxTimeout: int('PROXY_MAX_TIMEOUT', 120000),
   maxResponseBytes: int('MAX_RESPONSE_BYTES', 26214400),
+  maxBodyBytes: int('MAX_BODY_BYTES', 52428800),
   blockPrivateHosts: bool('BLOCK_PRIVATE_HOSTS', false),
+
+  // For a public instance: proxied requests allowed per visitor, and for the whole server, each minute
+  // (0 = no limit). CLIENT_IP_HEADER names a header the host's own proxy sets to the visitor's address,
+  // such as cf-connecting-ip on Render; without it the connecting address is used.
+  rateLimitPerMinute: int('RATE_LIMIT_PER_MINUTE', 0),
+  rateLimitTotalPerMinute: int('RATE_LIMIT_TOTAL_PER_MINUTE', 0),
+  clientIpHeader: (process.env.CLIENT_IP_HEADER || '').trim().toLowerCase(),
+
+  // Demo mode: when set, the proxy only calls these hosts ("*.example.com" allows subdomains), so a public
+  // instance can't be used as an open proxy. Empty means any host.
+  allowedHosts: parseAllowedHosts(process.env.ALLOWED_HOSTS),
 };

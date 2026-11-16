@@ -125,8 +125,10 @@ Everything below is implemented and working.
 - A **proxy** endpoint that forwards requests and reports status, headers, body,
   timing, and byte size.
 - **Stateless** — the server writes nothing to disk; there is no storage endpoint.
-- Configurable **timeout**, **max response size**, and an optional **SSRF guard**
-  that blocks requests to localhost/private addresses.
+- Configurable **timeout** and **request/response size limits**.
+- For public instances: an **SSRF guard** that blocks localhost/private
+  addresses (it looks up domain names and checks every redirect hop), a
+  **demo-mode allow-list** of hosts, and a **rate limit**.
 - **Docker** + compose for one-command hosting.
 
 ---
@@ -195,11 +197,14 @@ When you click **Send**, here's exactly what happens:
    browser allows it.
 
 4. **The server forwards it** (`proxy.js`):
-   - Validate the URL and protocol; optionally block private hosts.
+   - Apply the rate limit (if configured) and validate the URL and protocol.
    - Strip hop-by-hop headers (`Host`, `Content-Length`, `Connection`, …).
-   - Run `fetch` with an `AbortController` timeout, following redirects.
-   - Read the full response into a buffer; measure **time** and **size**.
-   - Return `{ ok, status, statusText, headers, contentType, time, size, body }`.
+   - Run `fetch` with an `AbortController` timeout. Redirects (up to 20) are
+     followed by the proxy itself, so each hop is checked against the
+     allow-list and the SSRF guard before it is contacted.
+   - Stream the response, keeping at most `maxResponseBytes`; measure **time**
+     and **size**.
+   - Return `{ ok, status, statusText, headers, contentType, time, size, url, redirected, body }`.
      Images come back base64-encoded (`bodyBase64`) for inline preview; oversized
      bodies are truncated with a `truncated` flag.
 
@@ -241,7 +246,9 @@ reqlab/
 │   ├── server.js          # Express app: serves the site + stateless API, graceful shutdown
 │   ├── config.js          # env-driven config (+ tiny .env loader)
 │   └── api/
-│       ├── proxy.js       # the request-forwarding proxy (CORS bypass + SSRF guard)
+│       ├── proxy.js       # the request-forwarding proxy (CORS bypass, redirects, size cap)
+│       ├── guard.js       # SSRF guard + demo-mode allow-list
+│       ├── rateLimit.js   # in-memory rate limit for public instances
 │       └── routes.js      # wires /health and /proxy
 ├── public/                # the website (no build step)
 │   ├── index.html         # full UI markup
@@ -256,6 +263,7 @@ reqlab/
 │   └── reqlab.test.js     # backend test suite (node:test)
 ├── Dockerfile             # container image
 ├── docker-compose.yml     # one-command hosting
+├── render.yaml            # Render Blueprint: one-click public demo
 ├── .dockerignore
 ├── .env.example           # documented configuration template
 ├── .gitignore
@@ -271,8 +279,10 @@ reqlab/
 
 Centralizes all configuration. It includes a **minimal `.env` loader** (so there
 is no `dotenv` dependency) and exposes typed values with sensible defaults:
-`port`, `host`, `proxyTimeoutMs`, `proxyMaxTimeout`, `maxResponseBytes`, and
-`blockPrivateHosts`. Everything has a zero-config default, so the app runs
+`port`, `host`, `proxyTimeoutMs`, `proxyMaxTimeout`, `maxResponseBytes`,
+`maxBodyBytes`, `blockPrivateHosts`, and the public-instance settings
+`allowedHosts`, `rateLimitPerMinute`, `rateLimitTotalPerMinute`, and
+`clientIpHeader`. Everything has a zero-config default, so the app runs
 immediately with no `.env` at all.
 
 ### Storage — there is none on the server
@@ -293,26 +303,58 @@ ReqLab's server is **stateless**: it never writes to disk. All of your data
 
 ### `src/api/proxy.js`
 
-The heart of the app — and the reason it works. `createProxyHandler(config)`
+The heart of the app — and the reason it works. `createProxyHandler(config, deps)`
 returns an Express handler that:
 
-- **Validates** the request: requires a URL, parses it, allows only `http:`/
-  `https:`, and (if `blockPrivateHosts` is on) rejects loopback/private targets.
+- **Rate limits** (when configured): too many requests from one visitor, or for
+  the whole server, in a minute get `429` with a `Retry-After` header.
+- **Validates** the request: requires a URL, parses it, and allows only
+  `http:`/`https:`.
 - **Sanitizes headers** via `sanitizeHeaders`, removing hop-by-hop and managed
   headers (`Host`, `Content-Length`, `Connection`, `Accept-Encoding`, etc.) that
   must not be forwarded verbatim.
 - **Forwards** with `fetch`, using an `AbortController` for a bounded timeout
-  (capped by `proxyMaxTimeout`) and following redirects.
+  (capped by `proxyMaxTimeout`). It follows redirects itself (`redirect:
+  'manual'`, up to 20), applying the same rules as `fetch` — a `303` (or a
+  `301`/`302` after a `POST`) becomes a body-less `GET`, and `Authorization`/
+  `Cookie` headers are not sent on to another site — and checks every hop
+  against the allow-list and the SSRF guard (see `guard.js`).
 - **Measures** elapsed time and full byte size, then returns a structured JSON
   payload. Images are returned as base64 (`bodyBase64` + `isBinary`) so the UI
-  can preview them; bodies larger than `maxResponseBytes` are truncated with a
-  `truncated: true` flag.
+  can preview them. The body is streamed and only the first `maxResponseBytes`
+  are kept, with a `truncated: true` flag, so a huge response can't use up the
+  server's memory.
 - **Maps errors** to meaningful HTTP statuses: `504` for timeouts, `502` for DNS/
-  connection/TLS failures (with the underlying error code), `400`/`403` for bad
-  or blocked URLs.
+  connection/TLS failures (with the underlying error code) or too many
+  redirects, `400`/`403` for bad or blocked URLs.
 
 It also exports `isPrivateHost` and `sanitizeHeaders` as pure functions so they
-can be unit-tested directly.
+can be unit-tested directly. `deps` lets tests swap in a fake `fetch` and DNS
+`lookup`.
+
+### `src/api/guard.js`
+
+Decides which hosts the proxy may contact:
+
+- `checkAllowedHost(hostname, allowedHosts)` — demo mode. When `ALLOWED_HOSTS`
+  is set, only those exact host names (or subdomains, for `*.example.com`
+  entries) are allowed.
+- `checkHost(hostname)` — the SSRF guard, used when `BLOCK_PRIVATE_HOSTS` is on.
+  IP literals are classified directly; domain names are looked up, and the host
+  is blocked if **any** address it resolves to is loopback, private, link-local
+  (including cloud metadata at `169.254.169.254`), shared/carrier-grade NAT,
+  multicast or reserved. IPv6 is handled in every spelling, including bracketed
+  hosts (`[::1]`), IPv4-mapped/compatible addresses, NAT64 and 6to4.
+  Names such as `localhost`, `*.local`, and `*.internal` are blocked without a
+  lookup.
+
+### `src/api/rateLimit.js`
+
+A small fixed-window limiter kept in memory (nothing is written to disk): at
+most `RATE_LIMIT_PER_MINUTE` proxied requests per visitor and
+`RATE_LIMIT_TOTAL_PER_MINUTE` for the whole server. Visitors are told apart by
+`CLIENT_IP_HEADER` — a header the host's own proxy sets, such as
+`cf-connecting-ip` on Render — or else the connecting address.
 
 ### `src/api/routes.js`
 
@@ -330,12 +372,13 @@ instead of an unhandled crash.
 The entry point. It:
 
 - Creates the proxy handler from `config`.
-- Configures Express with large body limits (50 MB) so big payloads work.
+- Configures Express body limits from `MAX_BODY_BYTES` (50 MB by default) so big
+  payloads work.
 - Mounts the API under `/api`, with a JSON 404 for unknown API routes.
 - Serves the static site from `public/` with an SPA fallback to `index.html`.
 - Starts an HTTP server, prints a friendly banner (URL, that storage is
-  stateless, whether the SSRF guard is on), and installs **graceful shutdown**
-  on `SIGINT`/`SIGTERM`.
+  stateless, whether the SSRF guard, rate limit and allow-list are on), and
+  installs **graceful shutdown** on `SIGINT`/`SIGTERM`.
 
 ---
 
@@ -497,18 +540,26 @@ implementation is careful about the things that matter:
   or touch the ReqLab page.
 - **Header hygiene.** Hop-by-hop and managed headers are stripped before
   forwarding, preventing malformed/duplicated framing.
-- **Optional SSRF guard.** `BLOCK_PRIVATE_HOSTS=true` makes the proxy refuse
-  loopback and private-range targets (`127/8`, `10/8`, `172.16–31`, `192.168`,
-  link-local, IPv6 ULA/loopback). It's **off by default** so local development
+- **SSRF guard.** `BLOCK_PRIVATE_HOSTS=true` makes the proxy refuse loopback,
+  private, link-local (cloud metadata), shared, multicast and reserved
+  addresses, in IPv4 and every IPv6 spelling. Domain names are looked up and
+  blocked if any address is private, and redirects are followed by the proxy
+  itself so every hop is checked. It's **off by default** so local development
   against your own `localhost` APIs works; turn it **on** for any public
-  deployment. Note it matches on the hostname text, so a determined attacker
-  could bypass it via a domain that resolves to a private IP or a redirect.
-- **Bounded resource use.** Per-request timeouts (capped server-side) and a
-  max-response-size limit protect the server from hung or huge responses.
-- **The honest caveat.** A publicly exposed proxy can be abused to reach internal
-  services, and there is **no authentication**. For anything beyond
-  local/personal use, enable the SSRF guard and put ReqLab behind authentication.
-  This is called out in the README too.
+  deployment. Remaining gap: the guard looks a name up and then `fetch` looks it
+  up again, so a domain that switches to a private address in between (DNS
+  rebinding) could slip through.
+- **Demo-mode allow-list.** `ALLOWED_HOSTS` limits the proxy to named hosts, so
+  a public demo can't be used as an open proxy (and the rebinding gap above
+  can't be used with hosts you trust).
+- **Bounded resource use.** Per-request timeouts (capped server-side), a
+  streamed response capped at `MAX_RESPONSE_BYTES`, a request size limit
+  (`MAX_BODY_BYTES`), and an optional per-visitor and server-wide rate limit
+  protect the server from hung, huge, or repeated requests.
+- **The honest caveat.** A publicly exposed proxy can be abused, and there is
+  **no authentication**. For anything beyond local/personal use, enable the
+  SSRF guard, the allow-list and the rate limit (as `render.yaml` does), or put
+  ReqLab behind authentication. This is called out in the README too.
 
 ---
 
@@ -519,8 +570,20 @@ implementation is careful about the things that matter:
 All passing:
 
 - `isPrivateHost` correctly classifies loopback / private / public addresses
-  (including the `172.16–31` boundary).
+  (including the `172.16–31` boundary, bracketed and IPv4-mapped IPv6,
+  carrier-grade NAT, and `*.internal` names).
+- `checkHost` blocks a domain when any address it resolves to is private.
 - `sanitizeHeaders` strips hop-by-hop headers and keeps user headers.
+- Every redirect hop passes the SSRF guard: a public host that redirects to
+  `127.0.0.1` is refused, and the private address is never contacted.
+- The allow-list accepts listed hosts and `*.domain` subdomains, rejects
+  look-alikes, and is applied to redirects.
+- Redirect following matches `fetch`: a `303` after a `POST` becomes a `GET`
+  with no body, `Authorization` is dropped when the redirect changes site, and
+  the payload reports the final `url` and `redirected: true`.
+- Responses larger than `maxResponseBytes` are truncated and flagged.
+- The rate limit answers `429` with `Retry-After` once a visitor uses up their
+  requests, without affecting other visitors.
 - An **end-to-end integration test** spins up a local echo server and the ReqLab
   app, then verifies: a POST is forwarded with its body + `Authorization`; an
   invalid URL returns `400`; there is **no `/api/store` endpoint** (the server is
@@ -553,6 +616,15 @@ The `Dockerfile` installs only production deps, runs as a Node 20 Alpine image,
 exposes `4000`, and includes a `HEALTHCHECK`. No volume is needed because the
 server is stateless.
 
+### Render (one click)
+
+[`render.yaml`](../render.yaml) is a Render Blueprint, so the **Deploy to
+Render** button in the README creates a free web service with the public-demo
+settings: `BLOCK_PRIVATE_HOSTS=true`, a short `ALLOWED_HOSTS` list of
+well-known test APIs, a 2 MB response cap, a 1 MB request cap, and rate limits
+of 20 requests a minute per visitor and 120 for the whole server. Free services
+sleep after 15 idle minutes and take about a minute to wake.
+
 ### Any Node host (Render, Railway, Fly.io, a VPS…)
 
 - **Build:** `npm install`
@@ -560,8 +632,8 @@ server is stateless.
 - The app reads `process.env.PORT`. **No persistent disk is required** — the
   server stores nothing. Your data lives in your browser, so a hosted instance
   holds none of it.
-- Set `BLOCK_PRIVATE_HOSTS=true` and add an authentication layer for public
-  deployments.
+- For public deployments, set `BLOCK_PRIVATE_HOSTS=true` and either use
+  `ALLOWED_HOSTS` with the rate limit or add an authentication layer.
 
 ---
 

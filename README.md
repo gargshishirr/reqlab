@@ -8,6 +8,8 @@
 ReqLab is a single, dependency-light web app (one runtime dependency: Express).
 No build step, no framework, no account — just `npm start`.
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/gargshishirr/reqlab)
+
 > 📖 For a full deep-dive — architecture, every file, the request lifecycle,
 > the data model, security, and testing — see
 > [docs/DOCUMENTATION.md](docs/DOCUMENTATION.md).
@@ -47,7 +49,8 @@ No build step, no framework, no account — just `npm start`.
 ### Backend
 - **Proxy** (`POST /api/proxy`) forwards requests server-side to **bypass CORS** (the same reason the Postman/Insomnia desktop apps work), capturing status, headers, body, timing, and byte size
 - **Stateless** — the server writes **nothing** to disk; it's a pure proxy
-- Configurable timeout, max response size, and an optional **SSRF guard** for private hosts
+- Configurable timeout and request/response size limits
+- For public instances: an **SSRF guard** (looks up where a domain really points and checks every redirect hop), a **demo-mode allow-list** of hosts, and a **rate limit**
 - **Docker** + compose for one-command hosting
 
 ---
@@ -87,7 +90,9 @@ reqlab/
 │   ├── server.js          # Express app: static site + stateless API
 │   ├── config.js          # env-driven configuration
 │   └── api/
-│       ├── proxy.js       # the request-forwarding proxy (CORS bypass + SSRF guard)
+│       ├── proxy.js       # the request-forwarding proxy (CORS bypass, redirects, size cap)
+│       ├── guard.js       # SSRF guard + demo-mode allow-list
+│       ├── rateLimit.js   # in-memory rate limit for public instances
 │       └── routes.js      # health + proxy endpoints
 ├── public/                # the website (no build step)
 │   ├── index.html
@@ -100,6 +105,7 @@ reqlab/
 │       └── app.js         # main UI logic (tabs, requests, collections, …)
 ├── test/reqlab.test.js    # backend test suite
 ├── Dockerfile · docker-compose.yml
+├── render.yaml            # one-click public demo on Render
 ├── .env.example
 └── package.json
 ```
@@ -207,7 +213,12 @@ Copy `.env.example` to `.env` (all optional):
 | `PROXY_TIMEOUT_MS` | `30000` | Default per-request timeout |
 | `PROXY_MAX_TIMEOUT` | `120000` | Upper bound on per-request timeout |
 | `MAX_RESPONSE_BYTES` | `26214400` | Max response kept for display (25 MB) |
-| `BLOCK_PRIVATE_HOSTS` | `false` | Block proxying to localhost/private IPs |
+| `MAX_BODY_BYTES` | `52428800` | Max size of a request sent to ReqLab itself (50 MB) |
+| `BLOCK_PRIVATE_HOSTS` | `false` | Block proxying to localhost/private IPs, including domains that resolve to them and redirects that lead to them |
+| `ALLOWED_HOSTS` | *(empty)* | Demo mode: only call these hosts (comma separated; `*.example.com` allows subdomains). Empty allows any host |
+| `RATE_LIMIT_PER_MINUTE` | `0` | Proxied requests per visitor per minute (`0` = no limit) |
+| `RATE_LIMIT_TOTAL_PER_MINUTE` | `0` | Proxied requests per minute for the whole server (`0` = no limit) |
+| `CLIENT_IP_HEADER` | *(empty)* | Header your host's proxy sets to the visitor's IP, for the rate limit (`cf-connecting-ip` on Render). Never use one visitors can set themselves |
 
 > There is no data directory to configure — the server stores nothing.
 
@@ -231,6 +242,18 @@ docker run -p 4000:4000 reqlab
 
 No volume is needed — the server is stateless.
 
+### Render (one click)
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/gargshishirr/reqlab)
+
+The button uses [`render.yaml`](render.yaml), which runs ReqLab as a **public
+demo** on the free plan: the SSRF guard is on, the proxy only calls a short
+list of well-known test APIs (`ALLOWED_HOSTS`), and requests are rate limited.
+To use your instance for any API, clear `ALLOWED_HOSTS` in the Render
+dashboard — but only if you also put it behind a login, or it becomes an open
+proxy that anyone can use. A free Render service sleeps after 15 idle minutes
+and takes about a minute to wake up.
+
 ### Any Node host (Render, Railway, Fly.io, a VPS…)
 
 - **Build:** `npm install`
@@ -245,10 +268,12 @@ No volume is needed — the server is stateless.
 
 > **If you expose ReqLab publicly,** set `BLOCK_PRIVATE_HOSTS=true`. The proxy
 > forwards whatever URL it's given (that's the whole point of an API client), so
-> an open instance could be used to reach internal services (SSRF). Blocking
-> private hosts mitigates this; for local/personal use you can leave it off so
-> you can test your own `localhost` APIs. Consider putting a public deployment
-> behind authentication.
+> an open instance could be used to reach internal services (SSRF). The guard
+> looks up every domain name and refuses private addresses, and it checks each
+> redirect hop as well. For local/personal use you can leave it off so you can
+> test your own `localhost` APIs. A public instance should also use
+> `ALLOWED_HOSTS` and the rate limit (as `render.yaml` does), or sit behind
+> authentication.
 
 ---
 
@@ -258,7 +283,10 @@ No volume is needed — the server is stateless.
 npm test
 ```
 
-The suite covers the SSRF host classifier, header sanitization, and an
+The suite covers the SSRF guard (IPv6 forms, IPv4-mapped addresses, domains
+that resolve to private addresses, redirects to private hosts), the demo-mode
+allow-list, header sanitization, redirect following (303 → GET, credentials
+dropped across sites), the response size cap, the rate limit, and an
 end-to-end proxy integration test (including the stateless behaviour — no
 `/api/store` endpoint) against a local target server.
 
@@ -274,7 +302,12 @@ end-to-end proxy integration test (including the stateless behaviour — no
 - Hop-by-hop headers (`Host`, `Content-Length`, `Connection`, …) are stripped
   before forwarding.
 - The proxy is intended for **trusted, local/personal use**, like every API
-  client. Use `BLOCK_PRIVATE_HOSTS` and an auth layer if you host it publicly.
+  client. If you host it publicly, use `BLOCK_PRIVATE_HOSTS`, `ALLOWED_HOSTS`
+  and the rate limit, or an auth layer.
+- Known limit of the SSRF guard: it looks up a domain and then lets `fetch`
+  connect, and `fetch` looks the name up again. A domain that switches to a
+  private address between the two lookups (DNS rebinding) could slip through.
+  `ALLOWED_HOSTS` closes that gap for public demos.
 
 ---
 
