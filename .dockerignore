@@ -4,8 +4,11 @@ data
 .git
 .gitignore
 .env
+.env.*
 *.log
 Dockerfile
 docker-compose.yml
 README.md
 test
+docs
+GUIDE.md

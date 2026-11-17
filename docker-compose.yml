@@ -4,10 +4,18 @@ services:
     container_name: reqlab
     ports:
       - "4000:4000"
+    # Settings come from a .env file next to this one, if there is one (copy .env.example).
+    # If other people can reach this copy, set REQLAB_PASSWORD and SESSION_SECRET there.
+    env_file:
+      - path: .env
+        required: false
     environment:
       PORT: 4000
       HOST: 0.0.0.0
-      # Set to "true" if you expose ReqLab beyond your machine and want to
-      # stop the proxy from reaching localhost / private network addresses.
-      BLOCK_PRIVATE_HOSTS: "false"
+    # The server writes nothing, so the container can be locked down.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
