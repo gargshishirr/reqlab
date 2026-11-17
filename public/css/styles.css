@@ -102,6 +102,7 @@ select { cursor: pointer; }
 .env-icon { font-size: 14px; }
 .env-picker select { min-width: 150px; }
 .topbar-actions { display: flex; gap: 6px; }
+.sign-out { margin: 0; }
 
 /* ── Workspace ───────────────────────────────────────────── */
 .workspace { display: flex; height: calc(100vh - 52px); }
@@ -359,6 +360,18 @@ select { cursor: pointer; }
 
 .spinner { width: 15px; height: 15px; border: 2px solid rgba(4, 32, 29, 0.4); border-top-color: #04201d; border-radius: 50%; display: inline-block; animation: spin 0.7s linear infinite; vertical-align: -2px; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Sign-in page (only when the server has a password) ───── */
+html.login, html.login body { overflow: auto; }
+html.login body { min-height: 100%; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.login-card { width: 100%; max-width: 380px; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 28px; box-shadow: var(--shadow); }
+.login-card .brand { margin-bottom: 18px; }
+.login-card h1 { margin: 0 0 6px; font-size: 20px; }
+.login-card > p { margin: 0 0 16px; line-height: 1.45; }
+.login-card .banner { margin: 0 0 16px; }
+.login-card input { width: 100%; }
+.login-card .btn { width: 100%; margin-top: 4px; padding: 10px 14px; }
+.login-notice { color: var(--m-get); }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 6px; }

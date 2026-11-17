@@ -51,6 +51,79 @@
     );
   }
 
+  // ── Cleaning data that comes from a file or from storage ────────────────
+  // Imported files (and anything saved from them) are untrusted: give every
+  // field the expected type so a broken or hostile file can't break the page.
+  const str = (v) => (typeof v === 'string' ? v : v == null ? '' : String(v));
+  const METHOD_TOKEN = /^[A-Z][A-Z0-9_-]{0,31}$/;
+
+  function normalizeRows(list) {
+    if (!Array.isArray(list)) return [];
+    return list
+      .filter((row) => row && typeof row === 'object')
+      .map((row) => ({ key: str(row.key), value: str(row.value), enabled: row.enabled !== false }));
+  }
+
+  function normalizeRequest(raw) {
+    const req = newRequest();
+    if (!raw || typeof raw !== 'object') return req;
+    const method = str(raw.method).trim().toUpperCase();
+    req.method = METHOD_TOKEN.test(method) ? method : 'GET';
+    req.url = str(raw.url);
+    req.params = normalizeRows(raw.params);
+    req.headers = normalizeRows(raw.headers);
+    const auth = raw.auth && typeof raw.auth === 'object' ? raw.auth : {};
+    for (const k of Object.keys(req.auth)) if (auth[k] != null) req.auth[k] = str(auth[k]);
+    if (!['none', 'bearer', 'basic', 'apikey'].includes(req.auth.type)) req.auth.type = 'none';
+    if (req.auth.addTo !== 'query') req.auth.addTo = 'header';
+    const body = raw.body && typeof raw.body === 'object' ? raw.body : {};
+    req.body.mode = ['none', 'raw', 'urlencoded', 'form-data'].includes(body.mode) ? body.mode : 'none';
+    req.body.raw = str(body.raw);
+    req.body.rawType = Object.prototype.hasOwnProperty.call(RAW_CONTENT_TYPES, body.rawType) ? body.rawType : 'json';
+    req.body.formData = normalizeRows(body.formData);
+    req.body.urlencoded = normalizeRows(body.urlencoded);
+    return req;
+  }
+
+  // `freshIds` gives imported items new ids, so importing the same file twice can't mix them up.
+  function normalizeCollection(raw, freshIds) {
+    const c = raw && typeof raw === 'object' ? raw : {};
+    return {
+      id: (!freshIds && str(c.id)) || uid(),
+      name: str(c.name) || 'Imported',
+      requests: (Array.isArray(c.requests) ? c.requests : [])
+        .filter((r) => r && typeof r === 'object')
+        .map((r) => ({
+          id: (!freshIds && str(r.id)) || uid(),
+          name: str(r.name) || 'Request',
+          request: normalizeRequest(r.request),
+        })),
+    };
+  }
+
+  function normalizeEnvironment(raw, freshIds) {
+    const e = raw && typeof raw === 'object' ? raw : {};
+    return {
+      id: (!freshIds && str(e.id)) || uid(),
+      name: str(e.name) || 'Environment',
+      variables: normalizeRows(e.variables),
+    };
+  }
+
+  function normalizeHistoryItem(raw) {
+    const h = raw && typeof raw === 'object' ? raw : {};
+    const request = normalizeRequest(h.request);
+    return {
+      id: str(h.id) || uid(),
+      ts: Number(h.ts) || Date.now(),
+      method: request.method,
+      url: str(h.url),
+      status: Number.isInteger(h.status) ? h.status : null,
+      ok: !!h.ok,
+      request,
+    };
+  }
+
   function newTab(request, meta = {}) {
     return {
       id: uid(),
@@ -204,7 +277,7 @@
   }
 
   // ── Method styling ──────────────────────────────────────────────────────
-  const methodClass = (m) => 'm-' + String(m || 'get').toLowerCase();
+  const methodClass = (m) => 'm-' + String(m || 'get').toLowerCase().replace(/[^a-z]/g, '');
 
   // ── Tab bar ─────────────────────────────────────────────────────────────
   function renderTabBar() {
@@ -215,7 +288,7 @@
       el.className = 'rtab' + (tab.id === state.activeTabId ? ' active' : '');
       const method = tab.request.method;
       el.innerHTML =
-        `<span class="rtab-method ${methodClass(method)}">${method}</span>` +
+        `<span class="rtab-method ${methodClass(method)}">${escapeHtml(method)}</span>` +
         `<span class="rtab-name">${escapeHtml(tab.name)}</span>` +
         (tab.dirty ? '<span class="dirty" title="Unsaved"></span>' : '') +
         '<span class="rtab-close" title="Close">✕</span>';
@@ -694,9 +767,9 @@
       el.className = 'hist-item';
       const statusTxt = h.status ? h.status : 'ERR';
       el.innerHTML =
-        `<span class="m ${methodClass(h.method)}">${h.method}</span>` +
+        `<span class="m ${methodClass(h.method)}">${escapeHtml(h.method)}</span>` +
         `<span class="label" title="${escapeHtml(h.url)}">${escapeHtml(stripProtocol(h.url))}</span>` +
-        `<span class="hist-status ${statusClass(h.status)}">${statusTxt}</span>`;
+        `<span class="hist-status ${statusClass(h.status)}">${escapeHtml(statusTxt)}</span>`;
       el.addEventListener('click', () => openRequestInTab(h.request, deriveName(h.request)));
       list.appendChild(el);
     });
@@ -765,7 +838,7 @@
         const item = document.createElement('div');
         item.className = 'req-item';
         item.innerHTML =
-          `<span class="m ${methodClass(saved.request.method)}">${saved.request.method}</span>` +
+          `<span class="m ${methodClass(saved.request.method)}">${escapeHtml(saved.request.method)}</span>` +
           `<span class="label">${escapeHtml(saved.name)}</span>` +
           '<button class="btn ghost tiny item-del">🗑</button>';
         item.addEventListener('click', (e) => {
@@ -972,15 +1045,11 @@
   }
 
   function mergeImport(collections, environments) {
-    const ensureIds = (arr) => arr.forEach((x) => (x.id = x.id || uid()));
-    ensureIds(collections);
-    collections.forEach((c) => {
-      c.requests = c.requests || [];
-      c.requests.forEach((r) => (r.id = r.id || uid()));
-    });
-    ensureIds(environments);
-    state.collections.push(...collections);
-    state.environments.push(...environments);
+    if (!Array.isArray(collections) || !Array.isArray(environments)) {
+      throw new Error('The file has no list of collections or environments.');
+    }
+    state.collections.push(...collections.map((c) => normalizeCollection(c, true)));
+    state.environments.push(...environments.map((e) => normalizeEnvironment(e, true)));
     renderCollections();
     renderEnvSelect();
     persistStore();
@@ -989,7 +1058,8 @@
   function convertPostman(doc) {
     const coll = { id: uid(), name: (doc.info && doc.info.name) || 'Imported', requests: [] };
     const walk = (items, prefix) => {
-      (items || []).forEach((item) => {
+      (Array.isArray(items) ? items : []).forEach((item) => {
+        if (!item || typeof item !== 'object') return;
         if (Array.isArray(item.item)) {
           walk(item.item, prefix ? prefix + ' / ' + item.name : item.name);
         } else if (item.request) {
@@ -1002,16 +1072,16 @@
       });
     };
     walk(doc.item, '');
-    return coll;
+    return normalizeCollection(coll, true);
   }
 
   function mapPostmanRequest(pr) {
     const req = newRequest();
-    req.method = (pr.method || 'GET').toUpperCase();
-    req.url = typeof pr.url === 'string' ? pr.url : (pr.url && pr.url.raw) || '';
+    req.method = str(pr.method || 'GET').toUpperCase();
+    req.url = typeof pr.url === 'string' ? pr.url : str(pr.url && pr.url.raw);
     if (Array.isArray(pr.header)) {
       req.headers = pr.header
-        .filter((h) => !h.disabled)
+        .filter((h) => h && !h.disabled)
         .map((h) => ({ key: h.key, value: h.value, enabled: true }));
     }
     if (pr.body) {
@@ -1022,7 +1092,7 @@
         req.body.rawType = lang === 'json' ? 'json' : lang || 'text';
       } else if (pr.body.mode === 'urlencoded') {
         req.body.mode = 'urlencoded';
-        req.body.urlencoded = (pr.body.urlencoded || []).map((p) => ({
+        req.body.urlencoded = (pr.body.urlencoded || []).filter(Boolean).map((p) => ({
           key: p.key,
           value: p.value,
           enabled: !p.disabled,
@@ -1030,7 +1100,7 @@
       } else if (pr.body.mode === 'formdata') {
         req.body.mode = 'form-data';
         req.body.formData = (pr.body.formdata || [])
-          .filter((p) => p.type !== 'file')
+          .filter((p) => p && p.type !== 'file')
           .map((p) => ({ key: p.key, value: p.value, enabled: !p.disabled }));
       }
     }
@@ -1243,11 +1313,12 @@
     bindEvents();
 
     // Hydrate from THIS browser's localStorage (never from the server).
+    const list = (v) => (Array.isArray(v) ? v : []);
     try {
       const store = JSON.parse(localStorage.getItem(STORE_KEY)) || {};
-      state.collections = store.collections || [];
-      state.environments = store.environments || [];
-      state.history = store.history || [];
+      state.collections = list(store.collections).map((c) => normalizeCollection(c));
+      state.environments = list(store.environments).map((e) => normalizeEnvironment(e));
+      state.history = list(store.history).map((h) => normalizeHistoryItem(h));
     } catch (_e) {
       /* start empty */
     }
@@ -1257,11 +1328,24 @@
     try {
       restored = JSON.parse(localStorage.getItem(TABS_KEY));
     } catch (_e) {}
+    const restoredTabs = list(restored && restored.tabs)
+      .filter((t) => t && typeof t === 'object')
+      .map((t) => ({
+        id: str(t.id) || uid(),
+        name: str(t.name) || 'Untitled Request',
+        dirty: !!t.dirty,
+        collectionId: t.collectionId ? str(t.collectionId) : null,
+        requestId: t.requestId ? str(t.requestId) : null,
+        request: normalizeRequest(t.request),
+        response: null,
+      }));
 
-    if (restored && Array.isArray(restored.tabs) && restored.tabs.length) {
-      state.tabs = restored.tabs.map((t) => ({ ...t, response: null }));
-      state.activeTabId = restored.activeTabId || state.tabs[0].id;
-      state.activeEnvId = restored.activeEnvId || null;
+    if (restoredTabs.length) {
+      state.tabs = restoredTabs;
+      state.activeTabId = restoredTabs.some((t) => t.id === restored.activeTabId)
+        ? restored.activeTabId
+        : restoredTabs[0].id;
+      state.activeEnvId = state.environments.some((e) => e.id === restored.activeEnvId) ? restored.activeEnvId : null;
     } else {
       const sample = newRequest({
         method: 'GET',
@@ -1276,6 +1360,17 @@
     renderHistory();
     renderTabBar();
     loadEditorFromTab();
+
+    // When this copy has a password, show a "Sign out" button.
+    window.RL_api
+      .session()
+      .then((session) => {
+        if (!session || !session.auth) return;
+        const form = $('#signOutForm');
+        form.hidden = false;
+        if (session.user) form.title = 'Signed in as ' + session.user;
+      })
+      .catch(() => {});
   }
 
   init();

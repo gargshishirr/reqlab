@@ -9,6 +9,20 @@
 (function (global) {
   'use strict';
 
+  /** When this copy has a password and the sign-in has ended, go back to the sign-in page. */
+  function signInAgain() {
+    global.location.assign('/login');
+    return { error: 'Your sign-in has ended. Opening the sign-in page…' };
+  }
+
+  async function readJson(res) {
+    try {
+      return await res.json();
+    } catch (_e) {
+      return { error: `The ReqLab server sent an unexpected answer (HTTP ${res.status}).` };
+    }
+  }
+
   global.RL_api = {
     /**
      * Forward a request through the server-side proxy.
@@ -21,8 +35,15 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const data = await res.json();
-      return data; // may be { ...response } or { error, time }
+      if (res.status === 401) return signInAgain();
+      return readJson(res); // may be { ...response } or { error, time }
+    },
+
+    /** { auth: false } without a password; otherwise { auth: true, user, expiresAt }. */
+    async session() {
+      const res = await fetch('/api/session');
+      if (res.status === 401) return signInAgain();
+      return readJson(res);
     },
   };
 })(window);

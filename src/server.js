@@ -1,40 +1,18 @@
 'use strict';
 
-const path = require('path');
 const http = require('http');
-const express = require('express');
 
 const config = require('./config');
-const { createProxyHandler } = require('./api/proxy');
-const { createRouter } = require('./api/routes');
+const { createApp } = require('./app');
 
-const proxyHandler = createProxyHandler(config);
-
-const app = express();
-const publicDir = path.join(__dirname, '..', 'public');
-
-// Request bodies can be large (uploads / big JSON payloads).
-app.use(express.json({ limit: config.maxBodyBytes }));
-app.use(express.text({ limit: config.maxBodyBytes, type: 'text/plain' }));
-
-// API
-app.use('/api', createRouter({ proxyHandler }));
-app.use('/api', (_req, res) => res.status(404).json({ error: 'endpoint not found' }));
-// Request-body errors (too large, malformed JSON) as JSON, so the UI can show what went wrong.
-app.use('/api', (err, _req, res, next) => {
-  if (!err.status || err.status >= 500) return next(err);
-  const mb = config.maxBodyBytes / 1048576;
-  const limit = mb >= 1 ? `${+mb.toFixed(1)} MB` : `${Math.ceil(config.maxBodyBytes / 1024)} KB`;
-  const error =
-    err.type === 'entity.too.large'
-      ? `The request is too large for this server (the limit is ${limit}).`
-      : 'The request could not be read.';
-  return res.status(err.status).json({ error });
-});
-
-// Static website
-app.use(express.static(publicDir));
-app.get('*', (_req, res) => res.sendFile(path.join(publicDir, 'index.html')));
+let app;
+try {
+  app = createApp(config);
+} catch (err) {
+  // A setting that can't work, such as a password that is too short. The message never contains it.
+  console.error(`\n  ReqLab could not start: ${err.message}\n`); // eslint-disable-line no-console
+  process.exit(1);
+}
 
 const server = http.createServer(app);
 
@@ -48,6 +26,16 @@ server.listen(config.port, config.host, () => {
   console.log(`  Proxy        : POST /api/proxy`);
   console.log(`  Storage      : stateless (nothing written to disk)`);
   console.log(
+    `  Password     : ${config.password ? `ON (sign-in required${config.username ? ', with a user name' : ''})` : 'off'}`
+  );
+  if (config.password) {
+    console.log(
+      `  Sign-ins     : last ${config.sessionHours > 0 ? config.sessionHours : 12} h, ${
+        config.sessionSecret ? 'kept across restarts' : 'end when the server restarts (set SESSION_SECRET to keep them)'
+      }`
+    );
+  }
+  console.log(
     `  SSRF guard   : ${config.blockPrivateHosts ? 'ON (private hosts blocked)' : 'off'}`
   );
   const limits = [
@@ -56,8 +44,15 @@ server.listen(config.port, config.host, () => {
   ].filter(Boolean);
   console.log(`  Rate limit   : ${limits.length ? limits.join(', ') : 'off'}`);
   console.log(
-    `  Allowed hosts: ${config.allowedHosts ? `${config.allowedHosts.length} (demo mode)` : 'any'}`
+    `  Allowed hosts: ${
+      config.allowedHosts && !config.password
+        ? `${config.allowedHosts.length} (demo mode)`
+        : `any${config.allowedHosts ? ' (ALLOWED_HOSTS is not used when a password is set)' : ''}`
+    }`
   );
+  if (!config.password && !config.blockPrivateHosts) {
+    console.log('  Local mode   : answers on localhost and IP addresses only (set a password to use a domain name)');
+  }
   console.log('  Press Ctrl+C to stop.');
   console.log('');
   /* eslint-enable no-console */

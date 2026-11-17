@@ -62,6 +62,19 @@ module.exports = {
   clientIpHeader: (process.env.CLIENT_IP_HEADER || '').trim().toLowerCase(),
 
   // Demo mode: when set, the proxy only calls these hosts ("*.example.com" allows subdomains), so a public
-  // instance can't be used as an open proxy. Empty means any host.
+  // instance can't be used as an open proxy. Empty means any host. Not used when a password is set.
   allowedHosts: parseAllowedHosts(process.env.ALLOWED_HOSTS),
+
+  // Password protection for a personal hosted copy: when set, the web page and the API ask you to sign
+  // in first. "off" or "none" also mean no password (some hosts insist on a value). See src/api/auth.js.
+  password: passwordSetting(process.env.REQLAB_PASSWORD),
+  username: (process.env.REQLAB_USERNAME || '').trim(),
+  // Signs the sign-in cookie. Without it a random key is made at startup, so sign-ins end on a restart.
+  sessionSecret: (process.env.SESSION_SECRET || '').trim(),
+  sessionHours: int('SESSION_HOURS', 12),
 };
+
+function passwordSetting(value) {
+  const password = (value || '').trim();
+  return /^(off|none)$/i.test(password) ? '' : password;
+}

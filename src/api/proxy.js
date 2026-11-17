@@ -1,7 +1,7 @@
 'use strict';
 
-const { BlockedHostError, checkAllowedHost, checkHost, isPrivateHost } = require('./guard');
-const { createRateLimiter } = require('./rateLimit');
+const { BlockedHostError, checkAllowedHost, checkHost, createGuardedLookup, isPrivateHost } = require('./guard');
+const { clientKey, createRateLimiter } = require('./rateLimit');
 
 /**
  * The proxy is what makes ReqLab actually work against any API: browsers block
@@ -39,6 +39,10 @@ function humanContentType(headers) {
   return (ct || '').split(';')[0].trim().toLowerCase();
 }
 
+// An HTTP method is a "token" (RFC 9110). CONNECT, TRACE and TRACK are refused, as fetch refuses them.
+const METHOD_TOKEN = /^[!#$%&'*+.^_`|~0-9A-Z-]{1,32}$/;
+const FORBIDDEN_METHODS = new Set(['CONNECT', 'TRACE', 'TRACK']);
+
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const MAX_REDIRECTS = 20; // the same limit as fetch's own redirect following
 const BODY_HEADERS = ['content-type', 'content-encoding', 'content-language', 'content-location'];
@@ -48,12 +52,6 @@ function withoutHeaders(headers, names) {
   const out = {};
   for (const [key, value] of Object.entries(headers)) if (!names.includes(key.toLowerCase())) out[key] = value;
   return out;
-}
-
-/** Who is asking, for the rate limit: a header set by the host's proxy (e.g. cf-connecting-ip), else the socket. */
-function clientKey(req, header) {
-  const value = header && req.get(header);
-  return (value && value.split(',')[0].trim()) || req.socket.remoteAddress || 'unknown';
 }
 
 /** Reads at most `limit` bytes of a response body, so a huge response can't use up the server's memory. */
@@ -86,12 +84,32 @@ async function discard(response) {
 }
 
 /**
+ * With the SSRF guard on, requests go through undici with a connect-time address check (see
+ * createGuardedLookup), so a domain can't switch to a private address after it was checked.
+ */
+function guardedFetch(connectLookup) {
+  const { Agent, fetch: undiciFetch } = require('undici');
+  const dispatcher = new Agent({ connect: { lookup: createGuardedLookup(connectLookup) } });
+  return (url, init) => undiciFetch(url, { ...init, dispatcher });
+}
+
+/** The BlockedHostError behind a failed request, if that's why it failed. */
+function blockedError(err) {
+  if (err instanceof BlockedHostError) return err;
+  return err && err.cause instanceof BlockedHostError ? err.cause : null;
+}
+
+/**
  * Build the Express handler bound to the given config.
  * @param {object} config
- * @param {object} [deps]  test seams: `fetch` and a dns.promises.lookup-compatible `lookup`
+ * @param {object} [deps]  test seams: `fetch`, a dns.promises.lookup-compatible `lookup` for the
+ *   up-front check, and a dns.lookup-compatible `connectLookup` for the connect-time check
  */
 function createProxyHandler(config, deps = {}) {
-  const fetchImpl = deps.fetch || fetch;
+  let fetchImpl = deps.fetch || fetch;
+  if (!deps.fetch && config.blockPrivateHosts) fetchImpl = guardedFetch(deps.connectLookup);
+  // The allow-list is for public demos. A password-protected copy is private, so it may call any host.
+  const allowedHosts = config.password ? null : config.allowedHosts;
   const limiter = createRateLimiter({
     perClient: config.rateLimitPerMinute,
     total: config.rateLimitTotalPerMinute,
@@ -129,6 +147,10 @@ function createProxyHandler(config, deps = {}) {
     if (target.protocol !== 'http:' && target.protocol !== 'https:') {
       return res.status(400).json({ error: 'Only http and https protocols are supported.' });
     }
+    const requestMethod = String(method).toUpperCase();
+    if (!METHOD_TOKEN.test(requestMethod) || FORBIDDEN_METHODS.has(requestMethod)) {
+      return res.status(400).json({ error: 'This HTTP method is not supported.' });
+    }
 
     // ── Forward ─────────────────────────────────────────────────────────
     const controller = new AbortController();
@@ -138,7 +160,7 @@ function createProxyHandler(config, deps = {}) {
 
     try {
       let current = target;
-      let upperMethod = String(method).toUpperCase();
+      let upperMethod = requestMethod;
       let sendHeaders = sanitizeHeaders(headers);
       let sendBody;
       if (body != null && body !== '' && upperMethod !== 'GET' && upperMethod !== 'HEAD') {
@@ -149,7 +171,7 @@ function createProxyHandler(config, deps = {}) {
       let response;
       let redirected = false;
       for (let hop = 0; ; hop += 1) {
-        checkAllowedHost(current.hostname, config.allowedHosts);
+        checkAllowedHost(current.hostname, allowedHosts);
         if (config.blockPrivateHosts) await checkHost(current.hostname, deps.lookup);
         const init = { method: upperMethod, headers: sendHeaders, redirect: 'manual', signal: controller.signal };
         if (sendBody !== undefined) init.body = sendBody;
@@ -217,8 +239,9 @@ function createProxyHandler(config, deps = {}) {
       res.json(payload);
     } catch (err) {
       const time = Date.now() - started;
-      if (err instanceof BlockedHostError) {
-        return res.status(403).json({ error: err.message, time });
+      const blocked = blockedError(err);
+      if (blocked) {
+        return res.status(403).json({ error: blocked.message, time });
       }
       if (err.name === 'AbortError') {
         return res.status(504).json({ error: `Request timed out after ${ms} ms.`, time });

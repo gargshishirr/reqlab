@@ -1,7 +1,7 @@
 # Render Blueprint — https://render.com/docs/blueprint-spec
-# Runs ReqLab as a public demo on Render's free plan. The proxy only calls a few well-known test APIs
-# (ALLOWED_HOSTS), checks every redirect hop, and is rate limited, so the demo can't be used as an open
-# proxy. Your own copy (npm start) has none of these limits.
+# Runs ReqLab on Render's free plan. Without a password it is a public demo: the proxy only calls a few
+# well-known test APIs (ALLOWED_HOSTS), checks every redirect hop, and is rate limited, so it can't be
+# used as an open proxy. With REQLAB_PASSWORD set it is your own private copy instead (see GUIDE.md).
 services:
   - type: web
     name: reqlab
@@ -15,6 +15,14 @@ services:
         value: "22"
       - key: NODE_ENV
         value: production
+      # Optional. Leave it empty (or write "off") for the public demo. Set a password (8+ characters)
+      # to make your copy private: you sign in first, and it can call any API (ALLOWED_HOSTS is then
+      # not used; the SSRF guard below stays on).
+      - key: REQLAB_PASSWORD
+        sync: false
+      # Signs the sign-in cookie, so you stay signed in when the free service sleeps and wakes up.
+      - key: SESSION_SECRET
+        generateValue: true
       - key: BLOCK_PRIVATE_HOSTS
         value: "true"
       - key: ALLOWED_HOSTS

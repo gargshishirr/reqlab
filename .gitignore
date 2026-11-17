@@ -1,6 +1,5 @@
-# Dependencies
+# Dependencies (package-lock.json is committed: Render and Docker install exactly what it lists)
 node_modules/
-package-lock.json
 yarn.lock
 pnpm-lock.yaml
 
