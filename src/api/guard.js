@@ -139,10 +139,38 @@ async function checkHost(hostname, lookup = dns.promises.lookup) {
   }
 }
 
+/**
+ * A `lookup` function for net.connect / tls.connect that refuses private addresses at the moment of
+ * connecting. `checkHost` alone can be raced: a name can resolve to a public address for the check and
+ * to a private one a moment later for the real connection (DNS rebinding). With this, the connection
+ * only ever goes to addresses that passed the check.
+ * @param {Function} [resolve]  dns.lookup-compatible callback function (tests pass a fake)
+ */
+function createGuardedLookup(resolve = dns.lookup) {
+  return function guardedLookup(hostname, options, callback) {
+    if (typeof options === 'function') {
+      callback = options;
+      options = {};
+    }
+    const opts = typeof options === 'number' ? { family: options } : options || {};
+    resolve(hostname, { ...opts, all: true }, (err, addresses) => {
+      if (err) return callback(err);
+      const list = Array.isArray(addresses) ? addresses : [];
+      if (!list.length || list.some((a) => isPrivateAddress(a.address))) {
+        return callback(new BlockedHostError(hostname));
+      }
+      if (opts.all) return callback(null, list);
+      return callback(null, list[0].address, list[0].family);
+    });
+  };
+}
+
 module.exports = {
+  ipv6Groups,
   isPrivateAddress,
   isPrivateHost,
   checkHost,
+  createGuardedLookup,
   parseAllowedHosts,
   checkAllowedHost,
   BlockedHostError,

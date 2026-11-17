@@ -297,4 +297,76 @@ test('allow-list: exact names, *.domain wildcards, and every redirect hop', asyn
 
   assert.equal((await send(port, { method: 'GET', url: 'https://cdn.images.test/x.png' })).status, 200);
   assert.equal((await send(port, { method: 'GET', url: 'https://not-listed.test/' })).status, 403);
+
+  // A password-protected copy is private, so the demo allow-list does not apply to it.
+  const privateServer = proxyApp({ ...baseConfig, allowedHosts: allowed, password: 'a long password' }, deps);
+  const privatePort = await listen(privateServer);
+  after(() => privateServer.close());
+  assert.equal((await send(privatePort, { method: 'GET', url: 'https://not-listed.test/' })).status, 200);
+});
+
+test('proxy API: refuses methods that are not HTTP method names, and CONNECT/TRACE', async (t) => {
+  const seen = [];
+  const target = http.createServer((req, res) => {
+    seen.push(req.method);
+    res.end('ok');
+  });
+  const targetPort = await listen(target);
+  const server = proxyApp(baseConfig);
+  const port = await listen(server);
+  t.after(() => {
+    target.close();
+    server.close();
+  });
+  const url = `http://127.0.0.1:${targetPort}/`;
+  for (const method of ['GET /admin', 'TRACE', 'connect', '', '<img>']) {
+    const res = await send(port, { method, url });
+    assert.equal(res.status, 400, JSON.stringify(method));
+    assert.match((await res.json()).error, /method is not supported/);
+  }
+  assert.equal((await send(port, { method: 'propfind', url })).status, 200);
+  assert.deepEqual(seen, ['PROPFIND']);
+});
+
+test('SSRF guard: addresses are checked again when connecting (DNS rebinding)', async (t) => {
+  const { createGuardedLookup } = require('../src/api/guard');
+  let contacted = false;
+  const target = http.createServer((_req, res) => {
+    contacted = true;
+    res.end('internal secret');
+  });
+  const targetPort = await listen(target);
+  // The up-front check sees a public address; the connection itself would get 127.0.0.1.
+  const deps = {
+    lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+    connectLookup: (_host, _opts, cb) => cb(null, [{ address: '127.0.0.1', family: 4 }]),
+  };
+  const server = proxyApp({ ...baseConfig, blockPrivateHosts: true }, deps);
+  const port = await listen(server);
+  t.after(() => {
+    target.close();
+    server.close();
+  });
+
+  const res = await send(port, { method: 'GET', url: `http://rebind.test:${targetPort}/` });
+  assert.equal(res.status, 403);
+  assert.match((await res.json()).error, /Requests to rebind\.test are blocked/);
+  assert.equal(contacted, false);
+
+  // Public answers pass through, in both shapes net.connect asks for.
+  const publicLookup = createGuardedLookup((_h, _o, cb) => cb(null, [{ address: '93.184.216.34', family: 4 }]));
+  await new Promise((resolve) =>
+    publicLookup('public.test', { all: true }, (err, list) => {
+      assert.ifError(err);
+      assert.deepEqual(list, [{ address: '93.184.216.34', family: 4 }]);
+      resolve();
+    })
+  );
+  await new Promise((resolve) =>
+    publicLookup('public.test', {}, (err, address, family) => {
+      assert.ifError(err);
+      assert.deepEqual([address, family], ['93.184.216.34', 4]);
+      resolve();
+    })
+  );
 });
